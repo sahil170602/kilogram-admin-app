@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import AdminDashboard from "./pages/AdminDashboard";
-import PinOverlay from "./components/PinOverlay"; // Make sure to create this component file
+import PinOverlay from "./components/PinOverLay"; // 🎯 Matches your filename lowercase
 
 function App() {
   const [isUnlocked, setIsUnlocked] = useState<boolean | null>(null);
@@ -29,13 +29,13 @@ function App() {
   if (isUnlocked === null) return null;
 
   return (
-    <>
+    <div className="min-h-screen bg-[#08080a] text-white selection:bg-primary/30">
       {isUnlocked ? (
         <AdminDashboard onLogout={handleLock} />
       ) : (
         <PinOverlay onUnlocked={handleUnlock} />
       )}
-    </>
+    </div>
   );
 }
 
