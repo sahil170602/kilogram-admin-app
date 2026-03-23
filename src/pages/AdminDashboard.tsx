@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { 
   Package, Truck, CheckCircle, Clock, Users, 
   LayoutGrid, ShoppingBag, MapPin, ChevronRight, 
   ChevronDown, Bike, Store as StoreIcon, BarChart3, 
-  Loader2, BellRing, XCircle, Search
+  Loader2, BellRing, XCircle, Search, UserPlus
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MainLayout from "../components/MainLayout";
@@ -20,6 +20,7 @@ import NotificationsPage from "./NotificationsPage";
 const AdminDashboard = () => {
   const [activeNav, setActiveNav] = useState("dashboard");
   const [orders, setOrders] = useState<any[]>([]);
+  const [ridersList, setRidersList] = useState<any[]>([]); // 🎯 State for dropdown
   const [stats, setStats] = useState({ users: 0, products: 0, delivered: 0 });
   const [loading, setLoading] = useState(true);
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
@@ -27,8 +28,62 @@ const AdminDashboard = () => {
   const [incomingOrder, setIncomingOrder] = useState<any | null>(null);
   const beepIntervalRef = useRef<any>(null);
 
+  // 🎯 MANUAL ASSIGNMENT: Logic to assign a specific rider from dropdown
+  const handleManualAssign = async (orderId: string, riderId: string) => {
+    try {
+      // 1. Mark selected rider as BUSY
+      await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', riderId);
+
+      // 2. Update order status and assign rider
+      const { error } = await supabase
+        .from('orders')
+        .update({ 
+          status: 'rider_assigned', 
+          rider_id: riderId 
+        })
+        .eq('id', orderId);
+
+      if (error) throw error;
+      fetchAllData();
+    } catch (err: any) {
+      alert("Assignment failed: " + err.message);
+    }
+  };
+
+  const dispatchToNextRider = useCallback(async (orderId: string) => {
+    try {
+      const { data: availableRider, error: riderError } = await supabase
+        .from('rider_profiles')
+        .select('id, full_name')
+        .eq('is_active', true)
+        .eq('is_busy', false)
+        .limit(1)
+        .maybeSingle();
+
+      if (riderError) throw riderError;
+
+      if (!availableRider) {
+        console.warn("No available riders found for order:", orderId);
+        return;
+      }
+
+      await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', availableRider.id);
+
+      await supabase.from('orders')
+        .update({ 
+          status: 'rider_assigned', 
+          rider_id: availableRider.id 
+        })
+        .eq('id', orderId);
+
+    } catch (err) {
+      console.error("Auto-Dispatch Error:", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchAllData();
+    fetchRiders(); // 🎯 Fetch riders for the dropdown
     
     const channel = supabase.channel('admin-sync')
       .on('postgres_changes', { event: 'INSERT', table: 'orders' }, (payload) => {
@@ -36,14 +91,19 @@ const AdminDashboard = () => {
         startBeep();
         fetchAllData(); 
       })
-      .on('postgres_changes', { event: 'UPDATE', table: 'orders' }, () => fetchAllData())
+      .on('postgres_changes', { event: 'UPDATE', table: 'orders' }, (payload) => {
+        if (payload.new.status === 'pending') {
+            dispatchToNextRider(payload.new.id);
+        }
+        fetchAllData();
+      })
       .subscribe();
       
     return () => { 
       supabase.removeChannel(channel); 
       stopBeep();
     };
-  }, []);
+  }, [dispatchToNextRider]);
 
   const startBeep = () => {
     if (beepIntervalRef.current) return;
@@ -71,48 +131,17 @@ const AdminDashboard = () => {
     }
   };
 
-  // 🎯 CORE LOGIC: Confirm and Search for Partner
+  const fetchRiders = async () => {
+    const { data } = await supabase.from('rider_profiles').select('id, full_name, is_busy, is_active');
+    if (data) setRidersList(data);
+  };
+
   const handleConfirmOrder = async () => {
     if (!incomingOrder) return;
     stopBeep();
-    
-    try {
-      // 1. Find a rider who is Online and Not Busy
-      const { data: availableRider, error: riderError } = await supabase
-        .from('rider_profiles')
-        .select('id, full_name')
-        .eq('is_active', true)
-        .eq('is_busy', false)
-        .limit(1)
-        .maybeSingle();
-
-      if (riderError) throw riderError;
-
-      if (!availableRider) {
-        // No rider? Keep status at placed but rider_id null
-        alert("No riders online. System will keep searching...");
-        await updateStatus(incomingOrder.id, 'order placed');
-      } else {
-        // 2. Mark Rider as BUSY to reserve them for this specific order
-        await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', availableRider.id);
-
-        // 3. Status is 'rider_assigned' (Triggers Rider App Popup)
-        const { error: assignError } = await supabase
-          .from('orders')
-          .update({ 
-            status: 'rider_assigned', 
-            rider_id: availableRider.id 
-          })
-          .eq('id', incomingOrder.id);
-
-        if (assignError) throw assignError;
-      }
-    } catch (err: any) {
-      console.error("Assignment Error:", err.message);
-    } finally {
-      setIncomingOrder(null);
-      fetchAllData();
-    }
+    await dispatchToNextRider(incomingOrder.id);
+    setIncomingOrder(null);
+    fetchAllData();
   };
 
   const handleDeclineOrder = async () => {
@@ -155,7 +184,6 @@ const AdminDashboard = () => {
       const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', orderId);
       if (error) throw error;
 
-      // Reset rider busy status if order ends
       if (newStatus === 'delivered' || newStatus === 'cancelled') {
         const order = orders.find(o => o.id === orderId);
         if (order?.rider_id) {
@@ -258,7 +286,7 @@ const AdminDashboard = () => {
                     <div>
                       <div className="flex items-center gap-3 mb-1.5">
                         <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">#{order.id.toString().slice(-6)}</span>
-                        <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${order.status === 'order placed' ? 'bg-orange-400 text-black' : 'bg-primary text-black'}`}>{order.status}</span>
+                        <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${order.status === 'order placed' || order.status === 'pending' ? 'bg-orange-400 text-black' : 'bg-primary text-black'}`}>{order.status}</span>
                       </div>
                       <h4 className="text-xl font-black text-white">₹{order.total_amount}</h4>
                       {order.rider_profiles?.full_name ? (
@@ -266,9 +294,27 @@ const AdminDashboard = () => {
                           <Bike size={12} /> partner: {order.rider_profiles.full_name}
                         </p>
                       ) : (
-                        <p className="text-[9px] font-black uppercase text-orange-400 tracking-widest mt-1.5 italic flex items-center gap-2 animate-pulse">
-                          <Search size={12} /> searching for partner...
-                        </p>
+                        <div className="mt-3 flex flex-col gap-2">
+                           <div className="flex items-center gap-2 text-orange-400 animate-pulse">
+                              <Search size={12} />
+                              <span className="text-[9px] font-black uppercase tracking-widest">Searching for partner...</span>
+                           </div>
+                           {/* 🎯 DROPDOWN FOR MANUAL ASSIGNMENT */}
+                           <div className="relative group">
+                              <select 
+                                onChange={(e) => handleManualAssign(order.id, e.target.value)}
+                                className="bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest rounded-lg px-3 py-2 outline-none focus:border-primary/50 text-white/60 appearance-none pr-8"
+                              >
+                                <option value="">Assign Partner</option>
+                                {ridersList.map(rider => (
+                                  <option key={rider.id} value={rider.id} disabled={rider.is_busy || !rider.is_active}>
+                                    {rider.full_name} {rider.is_busy ? '(Busy)' : !rider.is_active ? '(Offline)' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                              <UserPlus size={10} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/20 pointer-events-none" />
+                           </div>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -293,7 +339,7 @@ const AdminDashboard = () => {
                                 <span className="text-[9px] font-black uppercase text-white/20">Hub</span>
                               </div>
                               <div className="w-[45%] h-px border-t border-dashed border-white/20 relative">
-                                <motion.div animate={{ x: order.status === 'order placed' ? '0%' : (order.status === 'order packed' || order.status === 'rider_assigned') ? '50%' : '100%' }} transition={{ type: 'spring', damping: 25 }} className="absolute -top-5 left-0 text-primary">
+                                <motion.div animate={{ x: order.status === 'order placed' || order.status === 'pending' ? '0%' : (order.status === 'order packed' || order.status === 'rider_assigned') ? '50%' : '100%' }} transition={{ type: 'spring', damping: 25 }} className="absolute -top-5 left-0 text-primary">
                                   <Bike size={40} fill="currentColor" className="drop-shadow-[0_0_10px_rgba(255,153,193,0.5)]" />
                                 </motion.div>
                               </div>
@@ -312,7 +358,7 @@ const AdminDashboard = () => {
                               <StatusBtn active={order.status === 'order dispatched'} icon={<Truck size={22}/>} label="Dispatch" onClick={() => updateStatus(order.id, 'order dispatched')} />
                            </div>
                            <button onClick={() => updateStatus(order.id, 'delivered')} className="w-full h-16 bg-green-500 hover:bg-green-600 rounded-[1.5rem] text-white font-black uppercase text-xs tracking-[0.2em] flex items-center justify-center gap-3 transition-all active:scale-[0.97] shadow-[0_15px_30px_rgba(34,197,94,0.2)]">
-                            <CheckCircle size={20}/> Mark as Complete
+                             <CheckCircle size={20}/> Mark as Complete
                            </button>
                         </div>
                       </div>
