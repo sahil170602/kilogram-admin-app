@@ -28,9 +28,59 @@ const AdminDashboard = () => {
   const [incomingOrder, setIncomingOrder] = useState<any | null>(null);
   const beepIntervalRef = useRef<any>(null);
 
-  const handleManualAssign = async (orderId: string, riderId: string) => {
+  const fetchRiders = async () => {
+    const { data } = await supabase.from('rider_profiles').select('id, full_name, is_busy, is_active');
+    if (data) setRidersList(data);
+  };
+
+  const fetchAllData = async () => {
+    setLoading(true);
     try {
-      await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', riderId);
+      const { data: ordersData, error } = await supabase
+        .from('orders')
+        .select(`
+          *,
+          profiles!user_id(*),
+          rider_profiles!rider_id(full_name),
+          order_items (
+            quantity,
+            unit_price,
+            product_name,
+            products!product_id (
+              name,
+              price
+            )
+          )
+        `) 
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Primary Fetch Error:", error);
+      } else {
+        setOrders(ordersData || []);
+      }
+
+      const { count: uCount } = await supabase.from('profiles').select('*', { count: 'exact', head: true });
+      const { count: pCount } = await supabase.from('products').select('*', { count: 'exact', head: true });
+      const { count: dCount } = await supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered');
+
+      setStats({ 
+        users: uCount || 0, 
+        products: pCount || 0, 
+        delivered: dCount || 0 
+      });
+
+    } catch (err) {
+      console.error("Dashboard Global Fetch Error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleManualAssign = async (orderId: string, riderId: string) => {
+    if (!riderId) return;
+    try {
+      // 1. Assign rider and change status to rider_assigned
       const { error } = await supabase
         .from('orders')
         .update({ 
@@ -40,37 +90,15 @@ const AdminDashboard = () => {
         .eq('id', orderId);
 
       if (error) throw error;
+
+      // 2. Mark rider as busy
+      await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', riderId);
+      
       fetchAllData();
     } catch (err: any) {
       alert("Assignment failed: " + err.message);
     }
   };
-
-  const dispatchToNextRider = useCallback(async (orderId: string) => {
-    try {
-      const { data: availableRider, error: riderError } = await supabase
-        .from('rider_profiles')
-        .select('id, full_name')
-        .eq('is_active', true)
-        .eq('is_busy', false)
-        .limit(1)
-        .maybeSingle();
-
-      if (riderError) throw riderError;
-      if (!availableRider) return;
-
-      await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', availableRider.id);
-      await supabase.from('orders')
-        .update({ 
-          status: 'rider_assigned', 
-          rider_id: availableRider.id 
-        })
-        .eq('id', orderId);
-
-    } catch (err) {
-      console.error("Auto-Dispatch Error:", err);
-    }
-  }, []);
 
   useEffect(() => {
     fetchAllData();
@@ -83,9 +111,6 @@ const AdminDashboard = () => {
         fetchAllData(); 
       })
       .on('postgres_changes', { event: 'UPDATE', table: 'orders' }, (payload) => {
-        if (payload.new.status === 'pending') {
-            dispatchToNextRider(payload.new.id);
-        }
         fetchAllData();
       })
       .subscribe();
@@ -94,11 +119,11 @@ const AdminDashboard = () => {
       supabase.removeChannel(channel); 
       stopBeep();
     };
-  }, [dispatchToNextRider]);
+  }, []);
 
   const startBeep = () => {
     if (beepIntervalRef.current) return;
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (!AudioContext) return;
     
     beepIntervalRef.current = setInterval(() => {
@@ -122,15 +147,11 @@ const AdminDashboard = () => {
     }
   };
 
-  const fetchRiders = async () => {
-    const { data } = await supabase.from('rider_profiles').select('id, full_name, is_busy, is_active');
-    if (data) setRidersList(data);
-  };
-
   const handleConfirmOrder = async () => {
     if (!incomingOrder) return;
     stopBeep();
-    await dispatchToNextRider(incomingOrder.id);
+    // Default status is 'order placed' on acceptance
+    await updateStatus(incomingOrder.id, 'order placed');
     setIncomingOrder(null);
     fetchAllData();
   };
@@ -143,57 +164,19 @@ const AdminDashboard = () => {
     setIncomingOrder(null);
   };
 
-  const fetchAllData = async () => {
-    setLoading(true);
-    try {
-    const { data: ordersData, error } = await supabase
-  .from('orders')
-  .select(`
-    *,
-    profiles!user_id(*),
-    rider_profiles!rider_id(full_name),
-    order_items (
-      quantity,
-      unit_price,
-      products!product_id (  -- 🎯 This tells it to use the column, not the constraint name
-        name,
-        price
-      )
-    )
-  `) 
-  .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setOrders(ordersData || []);
-
-      const { count: uCount } = await supabase.from('profiles').select('*', { count: 'exact', head: true });
-      const { count: pCount } = await supabase.from('products').select('*', { count: 'exact', head: true });
-      const { count: dCount } = await supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered');
-
-      setStats({ users: uCount || 0, products: pCount || 0, delivered: dCount || 0 });
-    } catch (err) {
-      console.error("Dashboard Fetch Error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const updateStatus = async (orderId: string, newStatus: string) => {
     try {
       const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', orderId);
       if (error) throw error;
 
+      // If finished, free the rider
       if (newStatus === 'delivered' || newStatus === 'cancelled') {
         const order = orders.find(o => o.id === orderId);
         if (order?.rider_id) {
           await supabase.from('rider_profiles').update({ is_busy: false }).eq('id', order.rider_id);
         }
       }
-
       fetchAllData();
-      if ((newStatus === 'delivered' || newStatus === 'cancelled') && expandedOrder === orderId) {
-        setExpandedOrder(null);
-      }
     } catch (err: any) {
       console.error("Status update failed:", err.message);
     }
@@ -285,25 +268,28 @@ const AdminDashboard = () => {
                     <div>
                       <div className="flex items-center gap-3 mb-1.5">
                         <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">#{order.id.toString().slice(-6)}</span>
-                        <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${order.status === 'order placed' || order.status === 'pending' ? 'bg-orange-400 text-black' : 'bg-primary text-black'}`}>{order.status}</span>
+                        <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${order.status === 'order placed' ? 'bg-orange-400 text-black' : 'bg-primary text-black'}`}>{order.status.replace('_', ' ')}</span>
                       </div>
                       <h4 className="text-xl font-black text-white">₹{order.total_amount}</h4>
-                      {order.rider_profiles?.full_name ? (
+                      
+                      {/* Rider Logic: Show name only if assigned, else show dropdown */}
+                      {order.rider_id && order.rider_profiles?.full_name ? (
                         <p className="text-[9px] font-black uppercase text-primary tracking-widest mt-1.5 italic flex items-center gap-2">
                           <Bike size={12} /> partner: {order.rider_profiles.full_name}
                         </p>
                       ) : (
-                        <div className="mt-3 flex flex-col gap-2">
+                        <div className="mt-3 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
                            <div className="flex items-center gap-2 text-orange-400 animate-pulse">
                               <Search size={12} />
-                              <span className="text-[9px] font-black uppercase tracking-widest">Searching for partner...</span>
+                              <span className="text-[9px] font-black uppercase tracking-widest">assigning rider...</span>
                            </div>
-                           <div className="relative group">
+                           <div className="relative group w-fit">
                               <select 
                                 onChange={(e) => handleManualAssign(order.id, e.target.value)}
-                                className="bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest rounded-lg px-3 py-2 outline-none focus:border-primary/50 text-white/60 appearance-none pr-8"
+                                className="bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest rounded-lg px-3 py-2 outline-none focus:border-primary/50 text-white/60 appearance-none pr-8 cursor-pointer"
+                                defaultValue=""
                               >
-                                <option value="">Assign Partner</option>
+                                <option value="" disabled>Select Rider</option>
                                 {ridersList.map(rider => (
                                   <option key={rider.id} value={rider.id} disabled={rider.is_busy || !rider.is_active}>
                                     {rider.full_name} {rider.is_busy ? '(Busy)' : !rider.is_active ? '(Offline)' : ''}
@@ -318,7 +304,7 @@ const AdminDashboard = () => {
                   </div>
                   <div className="flex items-center gap-8">
                     <div className="text-right hidden md:block">
-                      <p className="text-sm font-black capitalize text-white/90">{order.user_name || 'kilogram user'}</p>
+                      <p className="text-sm font-black capitalize text-white/90">{order.profiles?.full_name || 'kilogram user'}</p>
                       <p className="text-[10px] font-bold text-white/20 truncate w-40 mt-1 uppercase tracking-tighter">{order.address}</p>
                     </div>
                     {expandedOrder === order.id ? <ChevronDown size={20} className="text-primary"/> : <ChevronRight size={20} className="text-white/10"/>}
@@ -329,31 +315,45 @@ const AdminDashboard = () => {
                   {expandedOrder === order.id && (
                     <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden bg-black/20">
                       <div className="px-10 pb-10 grid grid-cols-1 lg:grid-cols-2 gap-10 border-t border-white/5 pt-10">
-                        {/* 🎯 Order Products List */}
-                        <div className="space-y-4">
+                        <div className="space-y-5">
+                           <h5 className="text-[10px] font-black uppercase tracking-widest text-white/20 px-1">Live Route Simulation</h5>
+                           <div className="h-48 bg-black/40 rounded-[3rem] border border-white/5 relative overflow-hidden flex items-center justify-center shadow-inner mb-6">
+                              <div className="absolute left-10 top-1/2 -translate-y-1/2 flex flex-col items-center gap-3">
+                                <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center shadow-lg"><StoreIcon size={20} className="text-white/40"/></div>
+                                <span className="text-[9px] font-black uppercase text-white/20">Hub</span>
+                              </div>
+                              <div className="w-[45%] h-px border-t border-dashed border-white/20 relative">
+                                <motion.div animate={{ x: (order.status === 'order placed') ? '0%' : (order.status === 'out_for_delivery') ? '100%' : '50%' }} transition={{ type: 'spring', damping: 25 }} className="absolute -top-5 left-0 text-primary">
+                                  <Bike size={40} fill="currentColor" className="drop-shadow-[0_0_10px_rgba(255,153,193,0.5)]" />
+                                </motion.div>
+                              </div>
+                              <div className="absolute right-10 top-1/2 -translate-y-1/2 flex flex-col items-center gap-3">
+                                <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-lg"><MapPin size={20}/></div>
+                                <span className="text-[9px] font-black uppercase text-primary">User</span>
+                              </div>
+                           </div>
+
                            <h5 className="text-[10px] font-black uppercase tracking-widest text-primary px-1">Order Manifest</h5>
                            <div className="bg-white/[0.03] border border-white/5 rounded-[2rem] p-6 space-y-3">
                               {order.order_items?.map((item: any, idx: number) => (
                                 <div key={idx} className="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
                                    <div className="flex flex-col">
-                                      <span className="text-sm font-bold text-white/90 capitalize">{item.products?.name}</span>
+                                      <span className="text-sm font-bold text-white/90 capitalize">{item.products?.name || item.product_name}</span>
                                       <span className="text-[10px] font-bold text-white/30">QTY: {item.quantity}</span>
                                    </div>
                                    <span className="text-sm font-black text-primary italic">₹{item.unit_price * item.quantity}</span>
                                 </div>
                               ))}
-                              {(!order.order_items || order.order_items.length === 0) && (
-                                <p className="text-xs font-bold text-white/20 text-center py-4 italic">No items found in manifest</p>
-                              )}
                            </div>
                         </div>
 
                         <div className="flex flex-col justify-center">
                            <h5 className="text-[10px] font-black uppercase tracking-widest text-white/20 mb-5 px-1">Node Status Control</h5>
-                           <div className="grid grid-cols-3 gap-3 mb-4">
+                           <div className="grid grid-cols-2 gap-3 mb-4">
                               <StatusBtn active={order.status === 'order placed'} icon={<Package size={22}/>} label="Placed" onClick={() => updateStatus(order.id, 'order placed')} />
                               <StatusBtn active={order.status === 'order packed'} icon={<Clock size={22}/>} label="Packed" onClick={() => updateStatus(order.id, 'order packed')} />
-                              <StatusBtn active={order.status === 'order dispatched'} icon={<Truck size={22}/>} label="Dispatch" onClick={() => updateStatus(order.id, 'order dispatched')} />
+                              <StatusBtn active={order.status === 'rider_assigned'} icon={<UserPlus size={22}/>} label="Rider Set" onClick={() => {}} />
+                              <StatusBtn active={order.status === 'out_for_delivery'} icon={<Truck size={22}/>} label="On Way" onClick={() => updateStatus(order.id, 'out_for_delivery')} />
                            </div>
                            <button onClick={() => updateStatus(order.id, 'delivered')} className="w-full h-16 bg-green-500 hover:bg-green-600 rounded-[1.5rem] text-white font-black uppercase text-xs tracking-[0.2em] flex items-center justify-center gap-3 transition-all active:scale-[0.97] shadow-[0_15px_30px_rgba(34,197,94,0.2)]">
                              <CheckCircle size={20}/> Mark as Complete
