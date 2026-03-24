@@ -20,7 +20,7 @@ import NotificationsPage from "./NotificationsPage";
 const AdminDashboard = () => {
   const [activeNav, setActiveNav] = useState("dashboard");
   const [orders, setOrders] = useState<any[]>([]);
-  const [ridersList, setRidersList] = useState<any[]>([]); // 🎯 State for dropdown
+  const [ridersList, setRidersList] = useState<any[]>([]); 
   const [stats, setStats] = useState({ users: 0, products: 0, delivered: 0 });
   const [loading, setLoading] = useState(true);
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
@@ -28,13 +28,9 @@ const AdminDashboard = () => {
   const [incomingOrder, setIncomingOrder] = useState<any | null>(null);
   const beepIntervalRef = useRef<any>(null);
 
-  // 🎯 MANUAL ASSIGNMENT: Logic to assign a specific rider from dropdown
   const handleManualAssign = async (orderId: string, riderId: string) => {
     try {
-      // 1. Mark selected rider as BUSY
       await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', riderId);
-
-      // 2. Update order status and assign rider
       const { error } = await supabase
         .from('orders')
         .update({ 
@@ -61,14 +57,9 @@ const AdminDashboard = () => {
         .maybeSingle();
 
       if (riderError) throw riderError;
-
-      if (!availableRider) {
-        console.warn("No available riders found for order:", orderId);
-        return;
-      }
+      if (!availableRider) return;
 
       await supabase.from('rider_profiles').update({ is_busy: true }).eq('id', availableRider.id);
-
       await supabase.from('orders')
         .update({ 
           status: 'rider_assigned', 
@@ -83,7 +74,7 @@ const AdminDashboard = () => {
 
   useEffect(() => {
     fetchAllData();
-    fetchRiders(); // 🎯 Fetch riders for the dropdown
+    fetchRiders(); 
     
     const channel = supabase.channel('admin-sync')
       .on('postgres_changes', { event: 'INSERT', table: 'orders' }, (payload) => {
@@ -155,17 +146,25 @@ const AdminDashboard = () => {
   const fetchAllData = async () => {
     setLoading(true);
     try {
-      const { data: ordersData, error } = await supabase
-        .from('orders')
-        .select('*, profiles!user_id(*), rider_profiles!rider_id(full_name)') 
-        .order('created_at', { ascending: false });
+    const { data: ordersData, error } = await supabase
+  .from('orders')
+  .select(`
+    *,
+    profiles!user_id(*),
+    rider_profiles!rider_id(full_name),
+    order_items (
+      quantity,
+      unit_price,
+      products!product_id (  -- 🎯 This tells it to use the column, not the constraint name
+        name,
+        price
+      )
+    )
+  `) 
+  .order('created_at', { ascending: false });
 
-      if (error) {
-        const { data: fallbackData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-        if (fallbackData) setOrders(fallbackData);
-      } else {
-        setOrders(ordersData || []);
-      }
+      if (error) throw error;
+      setOrders(ordersData || []);
 
       const { count: uCount } = await supabase.from('profiles').select('*', { count: 'exact', head: true });
       const { count: pCount } = await supabase.from('products').select('*', { count: 'exact', head: true });
@@ -191,7 +190,7 @@ const AdminDashboard = () => {
         }
       }
 
-      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+      fetchAllData();
       if ((newStatus === 'delivered' || newStatus === 'cancelled') && expandedOrder === orderId) {
         setExpandedOrder(null);
       }
@@ -250,8 +249,8 @@ const AdminDashboard = () => {
               <p className="text-white/20 font-bold uppercase text-[9px] tracking-[0.4em] mt-3">Live Fleet Control Center</p>
             </div>
             <div className="hidden sm:block text-right">
-               <p className="text-[10px] font-black uppercase tracking-widest text-white/30">System Status</p>
-               <p className="text-xs font-black text-green-400 flex items-center gap-2 justify-end mt-1"><span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"/> Nodes Online</p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-white/30">System Status</p>
+                <p className="text-xs font-black text-green-400 flex items-center gap-2 justify-end mt-1"><span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"/> Nodes Online</p>
             </div>
           </header>
 
@@ -299,7 +298,6 @@ const AdminDashboard = () => {
                               <Search size={12} />
                               <span className="text-[9px] font-black uppercase tracking-widest">Searching for partner...</span>
                            </div>
-                           {/* 🎯 DROPDOWN FOR MANUAL ASSIGNMENT */}
                            <div className="relative group">
                               <select 
                                 onChange={(e) => handleManualAssign(order.id, e.target.value)}
@@ -331,22 +329,22 @@ const AdminDashboard = () => {
                   {expandedOrder === order.id && (
                     <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden bg-black/20">
                       <div className="px-10 pb-10 grid grid-cols-1 lg:grid-cols-2 gap-10 border-t border-white/5 pt-10">
-                        <div className="space-y-5">
-                           <h5 className="text-[10px] font-black uppercase tracking-widest text-white/20 px-1">Live Route Simulation</h5>
-                           <div className="h-60 bg-black/40 rounded-[3rem] border border-white/5 relative overflow-hidden flex items-center justify-center shadow-inner">
-                              <div className="absolute left-10 top-1/2 -translate-y-1/2 flex flex-col items-center gap-3">
-                                <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center shadow-lg"><StoreIcon size={20} className="text-white/40"/></div>
-                                <span className="text-[9px] font-black uppercase text-white/20">Hub</span>
-                              </div>
-                              <div className="w-[45%] h-px border-t border-dashed border-white/20 relative">
-                                <motion.div animate={{ x: order.status === 'order placed' || order.status === 'pending' ? '0%' : (order.status === 'order packed' || order.status === 'rider_assigned') ? '50%' : '100%' }} transition={{ type: 'spring', damping: 25 }} className="absolute -top-5 left-0 text-primary">
-                                  <Bike size={40} fill="currentColor" className="drop-shadow-[0_0_10px_rgba(255,153,193,0.5)]" />
-                                </motion.div>
-                              </div>
-                              <div className="absolute right-10 top-1/2 -translate-y-1/2 flex flex-col items-center gap-3">
-                                <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-lg"><MapPin size={20}/></div>
-                                <span className="text-[9px] font-black uppercase text-primary">User</span>
-                              </div>
+                        {/* 🎯 Order Products List */}
+                        <div className="space-y-4">
+                           <h5 className="text-[10px] font-black uppercase tracking-widest text-primary px-1">Order Manifest</h5>
+                           <div className="bg-white/[0.03] border border-white/5 rounded-[2rem] p-6 space-y-3">
+                              {order.order_items?.map((item: any, idx: number) => (
+                                <div key={idx} className="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
+                                   <div className="flex flex-col">
+                                      <span className="text-sm font-bold text-white/90 capitalize">{item.products?.name}</span>
+                                      <span className="text-[10px] font-bold text-white/30">QTY: {item.quantity}</span>
+                                   </div>
+                                   <span className="text-sm font-black text-primary italic">₹{item.unit_price * item.quantity}</span>
+                                </div>
+                              ))}
+                              {(!order.order_items || order.order_items.length === 0) && (
+                                <p className="text-xs font-bold text-white/20 text-center py-4 italic">No items found in manifest</p>
+                              )}
                            </div>
                         </div>
 
