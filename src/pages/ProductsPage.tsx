@@ -13,14 +13,14 @@ const ProductsPage = () => {
   const [filteredCategories, setFilteredCategories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Expanded Form State to match your "Highlights" image
+  // 🎯 Added 'rating' to initial state
   const [formData, setFormData] = useState({
     name: "", price: "", mrp: "", brand: "", shelf_life: "",
     origin: "", product_type: "", contents: "", material_type: "",
     section_id: "", category_id: "", is_veg: true,
     variant: "", allergen_info: "", key_features: "", 
     ingredients: "", calorie_count: "", item_included: "",
-    stock_status: "in_stock"
+    stock_status: "in_stock", rating: ""
   });
 
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -66,8 +66,10 @@ const ProductsPage = () => {
       let finalImageUrl = imagePreview;
       if (imageFile) finalImageUrl = await uploadImage(imageFile);
 
+      // 🎯 Ensure rating is formatted properly before sending to database
       const cleanPayload = {
         ...formData,
+        rating: formData.rating ? Number(formData.rating) : null,
         image_url: finalImageUrl
       };
       
@@ -85,13 +87,14 @@ const ProductsPage = () => {
   };
 
   const resetForm = () => {
+    // 🎯 Clear rating on reset
     setFormData({
       name: "", price: "", mrp: "", brand: "", shelf_life: "",
       origin: "", product_type: "", contents: "", material_type: "",
       section_id: "", category_id: "", is_veg: true,
       variant: "", allergen_info: "", key_features: "", 
       ingredients: "", calorie_count: "", item_included: "",
-      stock_status: "in_stock"
+      stock_status: "in_stock", rating: ""
     });
     setImageFile(null); setImagePreview(null); setEditingId(null);
   };
@@ -104,6 +107,7 @@ const ProductsPage = () => {
 
   const handleEdit = (p: any) => {
     setEditingId(p.id);
+    // 🎯 Populate rating when editing
     setFormData({
       name: p.name || "", price: p.price || "", mrp: p.mrp || "", brand: p.brand || "",
       shelf_life: p.shelf_life || "", origin: p.origin || "", product_type: p.product_type || "",
@@ -112,7 +116,7 @@ const ProductsPage = () => {
       is_veg: p.is_veg ?? true, variant: p.variant || "", allergen_info: p.allergen_info || "",
       key_features: p.key_features || "", ingredients: p.ingredients || "",
       calorie_count: p.calorie_count || "", item_included: p.item_included || "",
-      stock_status: p.stock_status || "in_stock"
+      stock_status: p.stock_status || "in_stock", rating: p.rating?.toString() || ""
     });
     setImagePreview(p.image_url);
     window.scrollTo({top: 0, behavior: 'smooth'});
@@ -157,6 +161,12 @@ const ProductsPage = () => {
                 <Input label="calorie count" placeholder="e.g. 484.6 kcal" value={formData.calorie_count} onChange={(v: any) => setFormData({...formData, calorie_count: v})} />
             </div>
 
+            {/* 🎯 Added Rating Field here */}
+            <div className="grid grid-cols-2 gap-4">
+                <Input label="rating (0-5)" type="number" step="0.1" min="0" max="5" placeholder="e.g. 4.8" value={formData.rating} onChange={(v: any) => setFormData({...formData, rating: v})} />
+                <Input label="items included" value={formData.item_included} onChange={(v: any) => setFormData({...formData, item_included: v})} />
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
                 <Input label="sale price (₹)" type="number" value={formData.price} onChange={(v: any) => setFormData({...formData, price: v})} />
                 <Input label="mrp (₹)" type="number" value={formData.mrp} onChange={(v: any) => setFormData({...formData, mrp: v})} />
@@ -173,7 +183,6 @@ const ProductsPage = () => {
 
             <div className="grid grid-cols-2 gap-4">
                 <Input label="product type" value={formData.product_type} onChange={(v: any) => setFormData({...formData, product_type: v})} />
-                <Input label="items included" value={formData.item_included} onChange={(v: any) => setFormData({...formData, item_included: v})} />
             </div>
 
             <div className="space-y-2">
